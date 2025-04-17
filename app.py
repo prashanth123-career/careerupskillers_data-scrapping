@@ -8,227 +8,182 @@ import zipfile
 from io import BytesIO
 from time import sleep
 from urllib.parse import urlparse
-from PIL import Image
 
 # --- CONFIG ---
-REQUEST_DELAY = 1.5  # seconds between requests
+REQUEST_DELAY = 1.5
 IMAGE_FOLDER = "seed_images"
 os.makedirs(IMAGE_FOLDER, exist_ok=True)
 
-# --- STREAMLIT UI ---
 st.set_page_config(page_title="🌱 OSC Seeds Scraper", layout="centered")
 st.title("🌱 OSC Seeds Product Scraper")
-st.markdown("Extract product data from [OSCSeeds.com](https://www.oscseeds.com)")
+st.markdown("Select a category from OSCSeeds.com, see how many products it has, and extract details instantly!")
 
-# --- INPUTS ---
-with st.form("scraper_inputs"):
-    category_url = st.text_input(
-        "Enter Product Category URL",
-        "https://www.oscseeds.com/product-category/vegetables/",
-        help="Example: https://www.oscseeds.com/product-category/flowers/"
-    )
-    max_products = st.slider("Number of products to extract", 1, 100, 10)
-    submit = st.form_submit_button("Start Scraping")
+# --- STEP 1: FETCH CATEGORIES ---
+@st.cache_data
+def get_categories():
+    url = "https://www.oscseeds.com/shop/"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    r = requests.get(url, headers=headers)
+    soup = BeautifulSoup(r.text, "html.parser")
+    categories = {}
+    for a in soup.select("ul.product-categories li a"):
+        name = a.get_text(strip=True)
+        href = a.get("href")
+        if name and href:
+            categories[name] = href
+    return categories
 
-# --- MAIN SCRAPING LOGIC ---
-if submit:
-    if not category_url.startswith('https://www.oscseeds.com'):
-        st.error("Please enter a valid OSCSeeds.com category URL")
-        st.stop()
+categories = get_categories()
+category_name = st.selectbox("Select a Product Category", list(categories.keys()))
+selected_url = categories[category_name]
 
-    with st.spinner(f"Scraping {max_products} products..."):
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://www.oscseeds.com/'
+# --- STEP 2: GET PRODUCT COUNT ---
+@st.cache_data
+def get_total_product_count(category_url):
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    r = requests.get(category_url, headers=headers)
+    soup = BeautifulSoup(r.text, "html.parser")
+    product_items = soup.select("li.product a.woocommerce-LoopProduct-link")
+    if not product_items:
+        return 0
+    # Get count by pagination (optional: use real count if available)
+    page = 1
+    total_links = []
+    while True:
+        url = f"{category_url}page/{page}/" if page > 1 else category_url
+        r = requests.get(url, headers=headers)
+        soup = BeautifulSoup(r.text, "html.parser")
+        links = [a.get("href") for a in soup.select("li.product a.woocommerce-LoopProduct-link")]
+        if not links:
+            break
+        total_links += links
+        page += 1
+        sleep(0.5)
+    return len(set(total_links))
+
+total_products = get_total_product_count(selected_url)
+st.success(f"✅ {total_products} products found in '{category_name}'")
+
+max_products = st.slider("How many products do you want to scrape?", 1, total_products, min(10, total_products))
+
+# --- STEP 3: SCRAPING FUNCTIONS ---
+def get_product_links(base_url, limit):
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    links = []
+    page = 1
+    while len(links) < limit:
+        url = f"{base_url}page/{page}/" if page > 1 else base_url
+        try:
+            r = requests.get(url, headers=headers)
+            soup = BeautifulSoup(r.text, 'html.parser')
+            for a in soup.select("li.product a.woocommerce-LoopProduct-link"):
+                href = a.get("href")
+                if href and href not in links:
+                    links.append(href)
+                    if len(links) >= limit:
+                        break
+            page += 1
+            sleep(0.5)
+        except:
+            break
+    return links
+
+def download_image(img_url):
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        r = requests.get(img_url, headers=headers, stream=True)
+        if r.status_code == 200:
+            filename = os.path.basename(urlparse(img_url).path)
+            filepath = os.path.join(IMAGE_FOLDER, filename)
+            with open(filepath, 'wb') as f:
+                f.write(r.content)
+            return filepath
+    except:
+        return ""
+    return ""
+
+def scrape_product(url):
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        r = requests.get(url, headers=headers)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        title = soup.select_one("h1.product_title")
+        price = soup.select_one("p.price")
+        desc = soup.select_one("div.woocommerce-product-details__short-description")
+        img = soup.select_one("div.woocommerce-product-gallery__image img")
+
+        data = {
+            "Product Name": title.get_text(strip=True) if title else "N/A",
+            "Price": price.get_text(strip=True) if price else "N/A",
+            "Description": desc.get_text(strip=True) if desc else "N/A",
+            "Product URL": url,
+            "Image File": ""
         }
 
-        all_products = []
-        image_files = []
+        if img and img.get("src"):
+            img_path = download_image(img.get("src"))
+            if img_path:
+                data["Image File"] = os.path.basename(img_path)
+                image_files.append(img_path)
 
-        # --- IMPROVED FUNCTIONS ---
-        def get_product_links(base_url, limit):
-            """Get product links with better error handling and duplicate prevention"""
-            links = []
-            page = 1
-            seen_links = set()
-            
-            while len(links) < limit:
-                url = f"{base_url}page/{page}/" if page > 1 else base_url
-                try:
-                    resp = requests.get(url, headers=headers, timeout=10)
-                    resp.raise_for_status()
-                    
-                    soup = BeautifulSoup(resp.text, 'html.parser')
-                    products = soup.select("li.product a.woocommerce-LoopProduct-link[href]")
-                    
-                    if not products:
-                        break
-                        
-                    for p in products:
-                        link = p.get('href').split('?')[0]  # Remove query params
-                        if link and link not in seen_links:
-                            seen_links.add(link)
-                            links.append(link)
-                            if len(links) >= limit:
-                                break
-                    
-                    page += 1
-                    sleep(REQUEST_DELAY)
-                except requests.exceptions.RequestException as e:
-                    st.warning(f"Couldn't fetch page {page}: {str(e)}")
-                    break
-                    
-            return links[:limit]
+        return data
+    except Exception as e:
+        st.warning(f"Failed: {url} - {e}")
+        return None
 
-        def download_image(img_url, product_name):
-            """Improved image download with proper naming and error handling"""
-            try:
-                if not img_url.startswith('http'):
-                    return ""
-                    
-                response = requests.get(img_url, headers=headers, stream=True, timeout=15)
-                response.raise_for_status()
-                
-                # Create safe filename from product name
-                safe_name = re.sub(r'[^\w\-_\. ]', '_', product_name)[:50]
-                ext = os.path.splitext(urlparse(img_url).path)[1][:4] or '.jpg'
-                filename = f"{safe_name}{ext}"
-                filepath = os.path.join(IMAGE_FOLDER, filename)
-                
-                # Save image with PIL for better format handling
-                with Image.open(BytesIO(response.content)) as img:
-                    img.save(filepath)
-                
-                return filepath
-            except Exception as e:
-                st.warning(f"Couldn't download image for {product_name}: {str(e)}")
-                return ""
+# --- STEP 4: RUN SCRAPER ---
+if st.button("Start Scraping"):
+    image_files = []
+    all_products = []
 
-        def scrape_product(url):
-            """Enhanced product scraping with multiple fallback selectors"""
-            try:
-                response = requests.get(url, headers=headers, timeout=10)
-                response.raise_for_status()
-                soup = BeautifulSoup(response.text, 'html.parser')
+    st.info(f"Scraping {max_products} products from {category_name}...")
+    product_links = get_product_links(selected_url, max_products)
 
-                # Multiple fallback selectors for each field
-                name = (soup.select_one("h1.product_title") or 
-                       soup.select_one("h1.entry-title")).get_text(strip=True)
-                
-                price = (soup.select_one("p.price") or 
-                        soup.select_one("span.woocommerce-Price-amount")).get_text(strip=True)
-                
-                desc = (soup.select_one("div.woocommerce-product-details__short-description") or 
-                       soup.select_one("div.product_meta") or 
-                       soup.select_one("div.product_description")).get_text(" ", strip=True)
-                
-                img = (soup.select_one("div.woocommerce-product-gallery__image img") or 
-                      soup.select_one("img.wp-post-image") or 
-                      soup.select_one("img.attachment-woocommerce_single"))
+    progress = st.progress(0)
+    status = st.empty()
 
-                data = {
-                    "Product Name": name if name else "N/A",
-                    "Price": re.sub(r'\s+', ' ', price).strip() if price else "N/A",
-                    "Description": desc if desc else "N/A",
-                    "Product URL": url,
-                    "Image File": ""
-                }
+    for i, link in enumerate(product_links, 1):
+        status.text(f"Scraping {i}/{len(product_links)}...")
+        data = scrape_product(link)
+        if data:
+            all_products.append(data)
+        progress.progress(i / len(product_links))
+        sleep(REQUEST_DELAY)
 
-                if img and img.get("src"):
-                    img_path = download_image(img.get("src"), data["Product Name"])
-                    data["Image File"] = os.path.basename(img_path) if img_path else ""
-                    if img_path:
-                        image_files.append(img_path)
+    progress.empty()
+    status.empty()
 
-                return data
+    if not all_products:
+        st.error("No data extracted.")
+        st.stop()
 
-            except Exception as e:
-                st.warning(f"Failed to scrape {url}: {str(e)}")
-                return None
+    df = pd.DataFrame(all_products)
+    excel_file = "osc_products.xlsx"
+    df.to_excel(excel_file, index=False)
 
-        # --- EXECUTION WITH PROGRESS ---
-        links = get_product_links(category_url, max_products)
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+    # --- DOWNLOADS ---
+    st.success(f"✅ Scraped {len(df)} products from {category_name}")
 
-        for i, link in enumerate(links, 1):
-            status_text.text(f"Processing {i}/{len(links)}: {link[:50]}...")
-            progress_bar.progress(i / len(links))
-            
-            product_data = scrape_product(link)
-            if product_data:
-                all_products.append(product_data)
-            
-            sleep(REQUEST_DELAY)
+    col1, col2 = st.columns(2)
+    with col1:
+        with open(excel_file, "rb") as f:
+            st.download_button("📥 Download Excel", f, file_name=excel_file)
 
-        progress_bar.empty()
-        status_text.empty()
+    with col2:
+        if image_files:
+            zip_buffer = BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for img_path in image_files:
+                    zipf.write(img_path, os.path.basename(img_path))
+            zip_buffer.seek(0)
+            st.download_button("📦 Download Images (ZIP)", data=zip_buffer, file_name="osc_seeds_images.zip", mime="application/zip")
+        else:
+            st.warning("No images found.")
 
-        if not all_products:
-            st.error("No products were scraped. The website structure may have changed.")
-            st.stop()
-
-        # --- DATA EXPORT ---
-        df = pd.DataFrame(all_products)
-        excel_file = "osc_seeds_data.xlsx"
-        df.to_excel(excel_file, index=False)
-
-        # --- RESULTS DISPLAY ---
-        st.success(f"✅ Successfully scraped {len(df)} products!")
-        
-        with st.expander("View Scraped Data"):
-            st.dataframe(df)
-
-        # --- DOWNLOAD BUTTONS ---
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            with open(excel_file, "rb") as f:
-                st.download_button(
-                    "📥 Download Excel",
-                    f,
-                    file_name=excel_file,
-                    mime="application/vnd.ms-excel",
-                    help="Contains all product data including descriptions"
-                )
-        
-        with col2:
-            if image_files:
-                zip_buffer = BytesIO()
-                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                    for img_path in image_files:
-                        zipf.write(img_path, os.path.basename(img_path))
-                zip_buffer.seek(0)
-                
-                st.download_button(
-                    "📦 Download Images (ZIP)",
-                    data=zip_buffer,
-                    file_name="osc_seeds_images.zip",
-                    mime="application/zip",
-                    help="Contains all product images with proper filenames"
-                )
-            else:
-                st.warning("No images were downloaded. The website may be blocking image downloads.")
-
-# --- STYLING ---
+# --- STYLE ---
 st.markdown("""
 <style>
-    .stDownloadButton button {
-        width: 100%;
-        transition: all 0.2s;
-    }
-    .stDownloadButton button:hover {
-        transform: scale(1.02);
-    }
-    .stSpinner > div {
-        justify-content: center;
-    }
-    .stDataFrame {
-        width: 100%;
-    }
-    [data-testid="stExpander"] .st-emotion-cache-1q7spjk {
-        width: 100%;
-    }
+    .stDownloadButton button { width: 100%; }
+    .stSpinner > div { justify-content: center; }
 </style>
 """, unsafe_allow_html=True)
