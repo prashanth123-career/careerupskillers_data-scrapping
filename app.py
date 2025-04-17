@@ -1,102 +1,190 @@
-import streamlit as st
+import os
+import time
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
-import os
-from urllib.parse import urljoin
-from time import sleep
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from PIL import Image
+import io
 
-# Set page config
-st.set_page_config(page_title="OSC Seeds Scraper", page_icon="🌱", layout="centered")
+# Configuration
+BASE_URL = "https://www.OSCseeds.com"
+OUTPUT_FOLDER = "osc_seeds_data"
+EXCEL_FILE = "osc_seeds_products.xlsx"
+IMAGE_FOLDER = os.path.join(OUTPUT_FOLDER, "images")
 
-# Output folder
-IMAGE_FOLDER = "seed_images"
-os.makedirs(IMAGE_FOLDER, exist_ok=True)
+def setup_driver():
+    """Set up Selenium WebDriver"""
+    options = webdriver.ChromeOptions()
+    options.add_argument('--headless')  # Run in background
+    options.add_argument('--disable-gpu')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    
+    driver = webdriver.Chrome(
+        service=Service(ChromeDriverManager().install()),
+        options=options
+    )
+    return driver
 
-# Header
-st.title("🌱 OSC Seeds Product Scraper")
-st.markdown("Extract product name, description, price, and images from [OSCSeeds.com](https://www.oscseeds.com).")
+def create_output_folder():
+    """Create output folder structure"""
+    if not os.path.exists(OUTPUT_FOLDER):
+        os.makedirs(OUTPUT_FOLDER)
+    if not os.path.exists(IMAGE_FOLDER):
+        os.makedirs(IMAGE_FOLDER)
 
-# Input category URL
-category_url = st.text_input("Enter Product Category URL (e.g., vegetables)", "https://www.oscseeds.com/product-category/vegetables/")
+def scrape_product_page(driver, url):
+    """Scrape individual product page"""
+    driver.get(url)
+    time.sleep(2)  # Allow page to load
+    
+    soup = BeautifulSoup(driver.page_source, 'html.parser')
+    
+    product_data = {
+        'name': '',
+        'price': '',
+        'sku': '',
+        'description': '',
+        'specifications': {},
+        'image_url': '',
+        'product_url': url
+    }
+    
+    try:
+        # Extract basic info - adjust selectors based on actual page structure
+        product_data['name'] = soup.find('h1', class_='product-title').text.strip()
+        product_data['price'] = soup.find('span', class_='price').text.strip()
+        product_data['sku'] = soup.find('span', class_='sku').text.strip().replace('SKU:', '').strip()
+        product_data['description'] = soup.find('div', class_='product-description').text.strip()
+        
+        # Extract specifications table
+        spec_table = soup.find('table', class_='specifications')
+        if spec_table:
+            for row in spec_table.find_all('tr'):
+                cols = row.find_all('td')
+                if len(cols) == 2:
+                    key = cols[0].text.strip()
+                    value = cols[1].text.strip()
+                    product_data['specifications'][key] = value
+        
+        # Extract main product image
+        img_tag = soup.find('img', class_='product-main-image')
+        if img_tag and 'src' in img_tag.attrs:
+            product_data['image_url'] = img_tag['src']
+            if not product_data['image_url'].startswith('http'):
+                product_data['image_url'] = BASE_URL + product_data['image_url']
+    
+    except Exception as e:
+        print(f"Error scraping product page {url}: {str(e)}")
+    
+    return product_data
 
-if st.button("Start Scraping"):
-    with st.spinner("Scraping in progress... please wait."):
-        all_products = []
+def download_image(url, product_id):
+    """Download and save product image"""
+    if not url:
+        return None
+    
+    try:
+        response = requests.get(url, stream=True)
+        if response.status_code == 200:
+            image = Image.open(io.BytesIO(response.content))
+            image_path = os.path.join(IMAGE_FOLDER, f"{product_id}.jpg")
+            image.save(image_path)
+            return image_path
+    except Exception as e:
+        print(f"Error downloading image {url}: {str(e)}")
+    return None
 
-        def get_product_links(category_url):
-            product_links = []
-            page = 1
-            while True:
-                url = f"{category_url}page/{page}/"
-                response = requests.get(url)
-                if response.status_code != 200:
-                    break
+def scrape_category_page(driver, url):
+    """Scrape a category page to get product links"""
+    driver.get(url)
+    time.sleep(2)
+    
+    soup = BeautifulSoup(driver.page_source, 'html.parser')
+    product_links = []
+    
+    product_items = soup.find_all('div', class_='product-item')
+    for item in product_items:
+        link = item.find('a', class_='product-link')
+        if link and 'href' in link.attrs:
+            product_url = link['href']
+            if not product_url.startswith('http'):
+                product_url = BASE_URL + product_url
+            product_links.append(product_url)
+    
+    return product_links
 
-                soup = BeautifulSoup(response.text, 'html.parser')
-                products = soup.select("li.product a.woocommerce-LoopProduct-link")
-                if not products:
-                    break
-
-                for prod in products:
-                    link = prod.get('href')
-                    if link and link not in product_links:
-                        product_links.append(link)
-
-                page += 1
-                sleep(0.5)
-
-            return product_links
-
-        def scrape_product_page(url):
-            response = requests.get(url)
-            soup = BeautifulSoup(response.text, 'html.parser')
-
-            title = soup.select_one("h1.product_title").get_text(strip=True) if soup.select_one("h1.product_title") else "N/A"
-            description = soup.select_one("div.woocommerce-product-details__short-description")
-            desc_text = description.get_text(strip=True) if description else "N/A"
-
-            price = soup.select_one("p.price").get_text(strip=True) if soup.select_one("p.price") else "N/A"
-
-            img_tag = soup.select_one("figure.woocommerce-product-gallery__wrapper img")
-            image_url = img_tag.get("src") if img_tag else None
-            image_filename = ""
-
-            if image_url:
-                image_filename = os.path.join(IMAGE_FOLDER, os.path.basename(image_url.split("?")[0]))
-                with open(image_filename, 'wb') as f:
-                    img_data = requests.get(image_url).content
-                    f.write(img_data)
-
-            return {
-                "Product Name": title,
-                "Description": desc_text,
-                "Price": price,
-                "Image File": image_filename,
-                "Product URL": url
-            }
-
-        # Run scraper
-        product_links = get_product_links(category_url)
-        for i, link in enumerate(product_links, 1):
-            st.text(f"Scraping product {i}/{len(product_links)}")
+def main():
+    print("Starting OSC Seeds data scraping...")
+    start_time = time.time()
+    
+    # Setup environment
+    create_output_folder()
+    driver = setup_driver()
+    
+    try:
+        # Get all product URLs (you may need to modify this based on site structure)
+        print("Discovering product pages...")
+        category_urls = [
+            f"{BASE_URL}/vegetables",
+            f"{BASE_URL}/flowers",
+            f"{BASE_URL}/herbs"
+            # Add more categories as needed
+        ]
+        
+        all_product_urls = []
+        for category_url in category_urls:
             try:
-                data = scrape_product_page(link)
-                all_products.append(data)
+                product_urls = scrape_category_page(driver, category_url)
+                all_product_urls.extend(product_urls)
+                print(f"Found {len(product_urls)} products in {category_url}")
             except Exception as e:
-                st.error(f"Failed to scrape: {link} - {e}")
-            sleep(0.5)
-
-        # Save Data
+                print(f"Error scraping category {category_url}: {str(e)}")
+        
+        # Scrape each product
+        print(f"Found {len(all_product_urls)} products total. Starting scraping...")
+        all_products = []
+        
+        for i, product_url in enumerate(all_product_urls, 1):
+            try:
+                print(f"Scraping product {i}/{len(all_product_urls)}: {product_url}")
+                product_data = scrape_product_page(driver, product_url)
+                
+                # Download image
+                if product_data['image_url']:
+                    image_path = download_image(product_data['image_url'], product_data['sku'] or f"product_{i}")
+                    product_data['image_path'] = image_path
+                
+                all_products.append(product_data)
+                
+            except Exception as e:
+                print(f"Error processing product {product_url}: {str(e)}")
+        
+        # Save to Excel
+        print("Saving data to Excel...")
         df = pd.DataFrame(all_products)
-        data_file = "osc_seeds_data.xlsx"
-        df.to_excel(data_file, index=False)
+        
+        # Flatten specifications dictionary into columns
+        spec_dfs = []
+        for specs in df['specifications']:
+            spec_dfs.append(pd.DataFrame([specs]))
+        
+        if spec_dfs:
+            specs_df = pd.concat(spec_dfs, axis=0)
+            specs_df.reset_index(drop=True, inplace=True)
+            df = pd.concat([df.drop(['specifications'], axis=1), specs_df], axis=1)
+        
+        df.to_excel(os.path.join(OUTPUT_FOLDER, EXCEL_FILE), index=False)
+        
+        print(f"Scraping completed successfully in {(time.time() - start_time)/60:.2f} minutes")
+        print(f"Data saved to: {os.path.join(OUTPUT_FOLDER, EXCEL_FILE)}")
+        print(f"Images saved to: {IMAGE_FOLDER}")
+    
+    finally:
+        driver.quit()
 
-        st.success("✅ Scraping complete!")
-        st.markdown("### Download Excel File:")
-        with open(data_file, "rb") as f:
-            st.download_button("📥 Download .xlsx", f, file_name="osc_seeds_data.xlsx")
-
-        st.markdown("### Download Images:")
-        st.write(f"All images are saved in `/{IMAGE_FOLDER}/` folder.")
-
+if __name__ == "__main__":
+    main()
