@@ -32,16 +32,30 @@ PROXIES = [
 # --- STREAMLIT CONFIG ---
 st.set_page_config(page_title="Universal Web Scraper", layout="centered")
 st.title("🌐 Universal Web Scraper")
-st.markdown("Scrape any public website with retry, logging, and image downloading support.")
+st.markdown("Scrape any public website easily, even if you're not technical.")
+
+# --- HELP TIPS ---
+st.markdown("""
+#### 👇 Need help picking a selector?
+- To extract links → type: `a`
+- To extract images → type: `img`
+- To extract article titles → try: `h2 a`
+- For anything else, right-click on the item in your browser → click **Inspect** → copy **CSS selector**.
+
+#### 🔍 Attribute Options:
+- `href` → for links
+- `src` → for images
+- `inner text` → to extract the actual visible text
+""")
 
 # --- INPUT FORM ---
 with st.form("scraper_inputs"):
-    target_url = st.text_input("Enter Website URL", "https://example.com")
-    selector_tag = st.text_input("CSS Selector for Links", "a")
-    attribute = st.text_input("Attribute to Extract (href/src/inner text)", "href")
-    max_items = st.slider("Max items to extract", 1, 200, 20)
-    max_retries = st.slider("Max retries per item", 0, 5, 2)
-    submit = st.form_submit_button("Start Scraping")
+    target_url = st.text_input("🔗 Website URL", "https://example.com")
+    selector_tag = st.text_input("📌 What to extract (CSS selector)", "a")
+    attribute = st.selectbox("📤 What data to extract?", ["href", "src", "inner text"])
+    max_items = st.slider("📊 How many items to extract?", 1, 200, 20)
+    max_retries = st.slider("🔁 Retry on failure (times)", 0, 5, 2)
+    submit = st.form_submit_button("🚀 Start Scraping")
 
 if submit:
     all_data = []
@@ -79,7 +93,7 @@ if submit:
             log_error(f"Image download failed for {url}: {e}")
             return ""
 
-    st.info(f"Scraping {target_url}...")
+    st.info(f"Scraping data from: {target_url}")
     html = fetch_url(target_url)
 
     if html:
@@ -93,7 +107,6 @@ if submit:
             else:
                 entry[attribute] = elem.get(attribute, "N/A")
 
-            # Download if it's an image URL
             if attribute in ["src", "href"] and str(entry.get(attribute)).lower().endswith(('.jpg', '.png', '.jpeg')):
                 img_path = download_image(entry[attribute], f"image_{i}")
                 entry["Image File"] = os.path.basename(img_path)
