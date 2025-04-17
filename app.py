@@ -2,141 +2,186 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
-import time
-from io import BytesIO
+import os
 import re
+import zipfile
+from io import BytesIO
+from time import sleep
+from urllib.parse import urlparse, urljoin
 
-# Streamlit App Config
-st.set_page_config(page_title="OSC Seeds Scraper", layout="wide")
+# Configuration
+REQUEST_DELAY = 1.5  # seconds between requests
+IMAGE_FOLDER = "seed_images"
+os.makedirs(IMAGE_FOLDER, exist_ok=True)
 
-def get_valid_urls():
-    """Returns actual working category URLs from OSCseeds.com"""
-    return {
-        "Vegetables": "https://www.oscseeds.com/category/vegetable-seeds/",
-        "Flowers": "https://www.oscseeds.com/category/flower-seeds/",
-        "Herbs": "https://www.oscseeds.com/category/herb-seeds/",
-        "All Products": "https://www.oscseeds.com/product-category/all-products/"
-    }
+# Set page config
+st.set_page_config(page_title="OSC Seeds Scraper", page_icon="🌱", layout="centered")
 
-def scrape_osc_seeds(url, max_products=10):
-    """Main scraping function for OSCseeds.com"""
-    try:
+# Header
+st.title("🌱 OSC Seeds Product Scraper")
+st.markdown("Extract product data from [OSCSeeds.com](https://www.oscseeds.com)")
+
+# Input category URL
+category_url = st.text_input(
+    "Enter Product Category URL",
+    "https://www.oscseeds.com/product-category/vegetables/"
+)
+
+if st.button("Start Scraping"):
+    if not category_url.startswith('https://www.oscseeds.com'):
+        st.error("Please enter a valid OSCSeeds.com category URL")
+        st.stop()
+
+    with st.spinner("Scraping in progress... please wait."):
+        # Initialize
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9'
         }
-        
-        # First get the category page
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Find product links - updated for OSCseeds structure
-        product_links = []
-        for product in soup.select('div.product-grid-item a.woocommerce-LoopProduct-link'):
-            href = product.get('href')
-            if href and '/product/' in href:
-                product_links.append(href)
-                if len(product_links) >= max_products:
-                    break
-        
-        if not product_links:
-            return None, "No products found on this page"
-        
-        # Scrape each product
         all_products = []
-        for i, product_url in enumerate(product_links):
+        image_files = []
+
+        def get_product_links(base_url):
+            """Collect all product links from paginated category"""
+            links = []
+            page = 1
+            while True:
+                url = f"{base_url}page/{page}/" if page > 1 else base_url
+                try:
+                    response = requests.get(url, headers=headers)
+                    response.raise_for_status()
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    
+                    products = soup.select("li.product a.woocommerce-LoopProduct-link")
+                    if not products:
+                        break
+                        
+                    for product in products:
+                        href = product.get('href')
+                        if href and href not in links:
+                            links.append(href)
+                    
+                    page += 1
+                    sleep(REQUEST_DELAY)
+                except Exception as e:
+                    st.warning(f"Couldn't fetch page {page}: {str(e)}")
+                    break
+            return links
+
+        def scrape_product_page(url):
+            """Scrape individual product details"""
             try:
-                # Respectful delay between requests
-                time.sleep(1)
-                
-                product_response = requests.get(product_url, headers=headers)
-                product_response.raise_for_status()
-                product_soup = BeautifulSoup(product_response.text, 'html.parser')
-                
-                # Extract product data - updated selectors for OSCseeds
-                product_data = {
-                    'name': product_soup.find('h1', class_='product_title').get_text(strip=True) if product_soup.find('h1', class_='product_title') else 'N/A',
-                    'price': product_soup.find('p', class_='price').get_text(strip=True) if product_soup.find('p', class_='price') else 'N/A',
-                    'sku': product_soup.find('span', class_='sku').get_text(strip=True) if product_soup.find('span', class_='sku') else 'N/A',
-                    'description': product_soup.find('div', class_='woocommerce-product-details__short-description').get_text(strip=True) if product_soup.find('div', class_='woocommerce-product-details__short-description') else 'N/A',
-                    'category': url.split('/')[-2].replace('-', ' ').title(),
-                    'product_url': product_url
+                response = requests.get(url, headers=headers)
+                response.raise_for_status()
+                soup = BeautifulSoup(response.text, 'html.parser')
+
+                # Extract data
+                data = {
+                    "Product Name": soup.select_one("h1.product_title").get_text(strip=True) if soup.select_one("h1.product_title") else "N/A",
+                    "Description": (soup.select_one("div.woocommerce-product-details__short-description").get_text(strip=True) 
+                                  if soup.select_one("div.woocommerce-product-details__short-description") else "N/A"),
+                    "Price": soup.select_one("p.price").get_text(strip=True) if soup.select_one("p.price") else "N/A",
+                    "Product URL": url,
+                    "Image File": ""
                 }
-                
-                # Extract specifications from tabs
-                specs = {}
-                tab_content = product_soup.find('div', class_='woocommerce-Tabs-panel')
-                if tab_content:
-                    for row in tab_content.find_all('tr'):
-                        cols = row.find_all('td')
-                        if len(cols) == 2:
-                            key = cols[0].get_text(strip=True)
-                            value = cols[1].get_text(strip=True)
-                            specs[key] = value
-                
-                product_data['specifications'] = specs
-                all_products.append(product_data)
-                
+
+                # Handle image
+                img_tag = soup.select_one("figure.woocommerce-product-gallery__wrapper img")
+                if img_tag and 'src' in img_tag.attrs:
+                    img_url = img_tag['src']
+                    if img_url.startswith('http'):
+                        img_path = download_image(img_url, IMAGE_FOLDER)
+                        if img_path:
+                            data["Image File"] = os.path.basename(img_path)
+                            image_files.append(img_path)
+
+                return data
             except Exception as e:
-                st.warning(f"Couldn't scrape product {product_url}: {str(e)}")
-                continue
-        
-        return pd.DataFrame(all_products), None
-    
-    except Exception as e:
-        return None, str(e)
+                st.warning(f"Failed to scrape {url}: {str(e)}")
+                return None
 
-# Streamlit UI
-st.title("🌱 OSC Seeds Scraper (Working Version)")
-st.markdown("""
-This version is specifically adapted for OSCseeds.com's actual structure.
-Select a category from the dropdown below.
-""")
+        def download_image(url, folder):
+            """Download and save product image"""
+            try:
+                response = requests.get(url, headers=headers, stream=True, timeout=10)
+                response.raise_for_status()
+                
+                filename = os.path.join(folder, os.path.basename(urlparse(url).path))
+                with open(filename, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                return filename
+            except Exception as e:
+                st.warning(f"Image download failed: {str(e)}")
+                return None
 
-# Get valid URLs
-valid_urls = get_valid_urls()
+        # Main execution
+        product_links = get_product_links(category_url)
+        progress_bar = st.progress(0)
+        status_text = st.empty()
 
-with st.form("scraper_form"):
-    col1, col2 = st.columns(2)
-    with col1:
-        category = st.selectbox("Select Category", list(valid_urls.keys()))
-    with col2:
-        max_products = st.slider("Maximum products", 1, 50, 10)
-    
-    if st.form_submit_button("Start Scraping"):
-        with st.spinner(f"Scraping {category} products..."):
-            url = valid_urls[category]
-            df, error = scrape_osc_seeds(url, max_products)
+        for i, link in enumerate(product_links, 1):
+            status_text.text(f"Processing product {i}/{len(product_links)}")
+            progress_bar.progress(i/len(product_links))
             
-            if error:
-                st.error(f"Error: {error}")
-            elif df is None:
-                st.warning("No products found. The website structure may have changed.")
-            else:
-                st.success(f"Successfully scraped {len(df)} products!")
-                
-                # Show data
-                st.dataframe(df)
-                
-                # Export
-                excel_buffer = BytesIO()
-                df.to_excel(excel_buffer, index=False)
+            product_data = scrape_product_page(link)
+            if product_data:
+                all_products.append(product_data)
+            
+            sleep(REQUEST_DELAY)
+
+        progress_bar.empty()
+        status_text.empty()
+
+        if not all_products:
+            st.error("No products found. Check the URL or website structure.")
+            st.stop()
+
+        # Save and display results
+        df = pd.DataFrame(all_products)
+        excel_file = "osc_seeds_data.xlsx"
+        df.to_excel(excel_file, index=False)
+
+        st.success(f"✅ Successfully scraped {len(df)} products!")
+        
+        # Download buttons
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            with open(excel_file, "rb") as f:
                 st.download_button(
-                    label="Download Excel",
-                    data=excel_buffer.getvalue(),
-                    file_name=f"osc_seeds_{category.lower()}.xlsx",
+                    "📥 Download Excel",
+                    f,
+                    file_name=excel_file,
                     mime="application/vnd.ms-excel"
                 )
+        
+        with col2:
+            if image_files:
+                zip_buffer = BytesIO()
+                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    for img in image_files:
+                        zipf.write(img, os.path.basename(img))
+                zip_buffer.seek(0)
+                
+                st.download_button(
+                    "📦 Download Images (ZIP)",
+                    data=zip_buffer,
+                    file_name="osc_seeds_images.zip",
+                    mime="application/zip"
+                )
+            else:
+                st.warning("No images were downloaded")
 
-# Add CSS to make wider
+# Add some styling
 st.markdown("""
 <style>
-    .main .block-container {
-        max-width: 1200px;
-    }
-    .stDataFrame {
+    .stDownloadButton button {
         width: 100%;
+    }
+    .stSpinner > div {
+        justify-content: center;
     }
 </style>
 """, unsafe_allow_html=True)
