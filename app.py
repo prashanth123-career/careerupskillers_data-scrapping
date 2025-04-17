@@ -15,8 +15,8 @@ REQUEST_DELAY = 1.5
 IMAGE_FOLDER = "seed_images"
 os.makedirs(IMAGE_FOLDER, exist_ok=True)
 
-st.set_page_config(page_title="\ud83c\udf31 OSC Seeds Scraper", layout="centered")
-st.title("\ud83c\udf31 OSC Seeds Product Scraper")
+st.set_page_config(page_title="OSC Seeds Scraper", layout="centered")
+st.title("🌱 OSC Seeds Product Scraper")
 st.markdown("Extract product data from [OSCSeeds.com](https://www.oscseeds.com)")
 
 # --- INPUTS ---
@@ -96,12 +96,16 @@ if submit:
                 soup = BeautifulSoup(response.text, 'html.parser')
                 name = (soup.select_one("h1.product_title") or soup.select_one("h1.entry-title")).get_text(strip=True)
                 price = (soup.select_one("p.price") or soup.select_one("span.woocommerce-Price-amount")).get_text(strip=True)
-                desc = (soup.select_one("div.woocommerce-product-details__short-description") or soup.select_one("div.product_meta") or soup.select_one("div.product_description")).get_text(" ", strip=True)
+                desc = (soup.select_one("div.woocommerce-product-details__short-description") or soup.select_one("div.product_meta") or soup.select_one("div.product_description"))
+                if desc:
+                    desc_text = desc.get_text(" ", strip=True)
+                else:
+                    desc_text = "N/A"
                 img = (soup.select_one("div.woocommerce-product-gallery__image img") or soup.select_one("img.wp-post-image") or soup.select_one("img.attachment-woocommerce_single"))
                 data = {
                     "Product Name": name if name else "N/A",
                     "Price": re.sub(r'\s+', ' ', price).strip() if price else "N/A",
-                    "Description": desc if desc else "N/A",
+                    "Description": desc_text,
                     "Product URL": url,
                     "Image File": ""
                 }
@@ -138,7 +142,7 @@ if submit:
         excel_file = "osc_seeds_data.xlsx"
         df.to_excel(excel_file, index=False)
 
-        st.success(f"\u2705 Successfully scraped {len(df)} products!")
+        st.success(f"✅ Successfully scraped {len(df)} products!")
 
         with st.expander("View Scraped Data"):
             st.dataframe(df)
@@ -147,7 +151,7 @@ if submit:
         with col1:
             with open(excel_file, "rb") as f:
                 st.download_button(
-                    "\ud83d\udcc5 Download Excel",
+                    "📥 Download Excel",
                     f,
                     file_name=excel_file,
                     mime="application/vnd.ms-excel",
@@ -162,7 +166,7 @@ if submit:
                         zipf.write(img_path, os.path.basename(img_path))
                 zip_buffer.seek(0)
                 st.download_button(
-                    "\ud83d\udcc1 Download Images (ZIP)",
+                    "📦 Download Images (ZIP)",
                     data=zip_buffer,
                     file_name="osc_seeds_images.zip",
                     mime="application/zip",
