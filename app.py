@@ -34,13 +34,27 @@ st.set_page_config(page_title="Universal Web Scraper", layout="centered")
 st.title("🌐 Universal Web Scraper")
 st.markdown("Scrape any public website easily, even if you're not technical.")
 
+# --- SCRAPE TYPE PRESETS ---
+scrape_type = st.selectbox("Choose what you're scraping:", [
+    "🌱 Product Listings (e.g., manufacturer websites)",
+    "💼 Job Listings (e.g., Indeed, LinkedIn)",
+    "📄 Custom - I'll provide my own settings"
+])
+
+# --- DEFAULT SELECTORS BASED ON TYPE ---
+defaults = {
+    "🌱 Product Listings (e.g., manufacturer websites)": {"selector": "li.product a", "attribute": "href"},
+    "💼 Job Listings (e.g., Indeed, LinkedIn)": {"selector": "div.job_seen_beacon a", "attribute": "href"},
+    "📄 Custom - I'll provide my own settings": {"selector": "a", "attribute": "href"}
+}
+
 # --- HELP TIPS ---
 st.markdown("""
 #### 👇 Need help picking a selector?
 - To extract links → type: `a`
 - To extract images → type: `img`
 - To extract article titles → try: `h2 a`
-- For anything else, right-click on the item in your browser → click **Inspect** → copy **CSS selector**.
+- For job cards → try: `div.job_seen_beacon a`
 
 #### 🔍 Attribute Options:
 - `href` → for links
@@ -51,8 +65,8 @@ st.markdown("""
 # --- INPUT FORM ---
 with st.form("scraper_inputs"):
     target_url = st.text_input("🔗 Website URL", "https://example.com")
-    selector_tag = st.text_input("📌 What to extract (CSS selector)", "a")
-    attribute = st.selectbox("📤 What data to extract?", ["href", "src", "inner text"])
+    selector_tag = st.text_input("📌 What to extract (CSS selector)", defaults[scrape_type]["selector"])
+    attribute = st.selectbox("📤 What data to extract?", ["href", "src", "inner text"], index=["href", "src", "inner text"].index(defaults[scrape_type]["attribute"]))
     max_items = st.slider("📊 How many items to extract?", 1, 200, 20)
     max_retries = st.slider("🔁 Retry on failure (times)", 0, 5, 2)
     submit = st.form_submit_button("🚀 Start Scraping")
