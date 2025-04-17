@@ -1,5 +1,7 @@
-streamlit
-requests
-beautifulsoup4
-pandas
-openpyxl
+beautifulsoup4==4.12.2
+requests==2.31.0
+pandas==2.0.3
+openpyxl==3.1.2
+selenium==4.10.0
+webdriver-manager==3.8.6
+pillow==10.0.0
